@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Slanted Edge LSF Tool</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #f5f5f3;
+    color: #1a1a1a;
+    padding: 2rem;
+    min-height: 100vh;
+  }
+  h1 { font-size: 20px; font-weight: 500; margin-bottom: 6px; }
+  .subtitle { font-size: 13px; color: #666; margin-bottom: 24px; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  .panel {
+    background: #fff;
+    border: 0.5px solid rgba(0,0,0,0.15);
+    border-radius: 12px;
+    padding: 16px 20px;
+  }
+  .section-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: #999;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+  .ctrl-row { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .ctrl-label { font-size: 13px; color: #555; min-width: 140px; }
+  .ctrl-val { font-size: 13px; font-weight: 500; min-width: 52px; text-align: right; color: #1a1a1a; }
+  input[type=range] {
+    flex: 1;
+    accent-color: #378ADD;
+    height: 4px;
+    cursor: pointer;
+  }
+  .metric-row { display: flex; gap: 12px; margin-bottom: 16px; }
+  .metric {
+    flex: 1;
+    background: #f5f5f3;
+    border-radius: 8px;
+    padding: 10px 14px;
+  }
+  .metric-label { font-size: 11px; color: #888; margin-bottom: 3px; }
+  .metric-value { font-size: 20px; font-weight: 500; color: #1a1a1a; }
+  canvas { display: block; }
+  #gridCanvas {
+    border: 0.5px solid rgba(0,0,0,0.12);
+    border-radius: 6px;
+    width: 100%;
+    max-width: 260px;
+    margin: 0 auto;
+  }
+  .grid-panel-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    height: 100%;
+    justify-content: center;
+  }
+  footer { margin-top: 24px; font-size: 12px; color: #aaa; text-align: center; }
+
+  @media (max-width: 600px) {
+    .grid-2 { grid-template-columns: 1fr; }
+    body { padding: 1rem; }
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1a1a1a; color: #e0e0e0; }
+    .panel { background: #242424; border-color: rgba(255,255,255,0.1); }
+    .ctrl-label { color: #aaa; }
+    .ctrl-val { color: #e0e0e0; }
+    .metric { background: #2e2e2e; }
+    .metric-value { color: #e0e0e0; }
+    .metric-label { color: #777; }
+    .subtitle { color: #888; }
+    footer { color: #555; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Slanted Edge LSF Tool</h1>
+<p class="subtitle">Perfect edge model — ESF is a Gaussian CDF, LSF is its derivative. Adjust angle and blur to explore oversampling and sharpness.</p>
+
+<div class="grid-2">
+  <div class="panel">
+    <div class="section-label">Controls</div>
+    <div class="ctrl-row">
+      <span class="ctrl-label">Edge angle</span>
+      <input type="range" min="1" max="30" step="0.5" value="5.7" id="angle">
+      <span class="ctrl-val" id="angle-out">5.7°</span>
+    </div>
+    <div class="ctrl-row">
+      <span class="ctrl-label">Gaussian blur σ (px)</span>
+      <input type="range" min="0.1" max="3" step="0.05" value="0.7" id="sigma">
+      <span class="ctrl-val" id="sigma-out">0.70</span>
+    </div>
+    <div class="ctrl-row">
+      <span class="ctrl-label">ROI rows</span>
+      <input type="range" min="8" max="40" step="1" value="20" id="rows">
+      <span class="ctrl-val" id="rows-out">20</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="grid-panel-inner">
+      <div class="section-label" style="align-self:flex-start;">Pixel grid preview</div>
+      <canvas id="gridCanvas" width="260" height="210"></canvas>
+    </div>
+  </div>
+</div>
+
+<div class="metric-row">
+  <div class="metric"><div class="metric-label">Oversampling factor</div><div class="metric-value" id="m-oversample">—</div></div>
+  <div class="metric"><div class="metric-label">LSF FWHM (px)</div><div class="metric-value" id="m-fwhm">—</div></div>
+  <div class="metric"><div class="metric-label">Subpixel bins</div><div class="metric-value" id="m-bins">—</div></div>
+</div>
+
+<div class="grid-2">
+  <div class="panel">
+    <div class="section-label">Edge spread function (ESF)</div>
+    <canvas id="esfCanvas" width="360" height="190" style="width:100%;"></canvas>
+  </div>
+  <div class="panel">
+    <div class="section-label">Line spread function (LSF)</div>
+    <canvas id="lsfCanvas" width="360" height="190" style="width:100%;"></canvas>
+  </div>
+</div>
+
+<footer>ISO 12233 slanted edge method — perfect edge assumption (no noise, no aberrations)</footer>
+
+<script>
+const isDark = matchMedia('(prefers-color-scheme: dark)').matches;
+const textColor  = isDark ? '#bbb' : '#444';
+const axisColor  = isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.18)';
+const blueStroke = '#378ADD';
+const amberStroke = '#EF9F27';
+
+function erf(x) {
+  const a1=0.254829592,a2=-0.284496736,a3=1.421413741,a4=-1.453152027,a5=1.061405429,p=0.3275911;
+  const sign = x < 0 ? -1 : 1; x = Math.abs(x);
+  const t = 1/(1+p*x);
+  const y = 1-(((((a5*t+a4)*t)+a3)*t+a2)*t+a1)*t*Math.exp(-x*x);
+  return sign*y;
+}
+function gaussianCDF(x, s) { return 0.5*(1+erf(x/(s*Math.SQRT2))); }
+function gaussianPDF(x, s) { return Math.exp(-0.5*(x/s)**2)/(s*Math.sqrt(2*Math.PI)); }
+
+function compute() {
+  const angleDeg = parseFloat(document.getElementById('angle').value);
+  const sigma    = parseFloat(document.getElementById('sigma').value);
+  const rows     = parseInt(document.getElementById('rows').value);
+  const cols     = 22;
+
+  document.getElementById('angle-out').textContent = angleDeg.toFixed(1) + '°';
+  document.getElementById('sigma-out').textContent = sigma.toFixed(2);
+  document.getElementById('rows-out').textContent  = rows;
+
+  const tanA = Math.tan(angleDeg * Math.PI / 180);
+  const oversample = 1 / tanA;
+  const bins = Math.min(Math.round(rows / tanA), 500);
+  const fwhm = (2*Math.sqrt(2*Math.log(2))*sigma).toFixed(2);
+
+  document.getElementById('m-oversample').textContent = oversample.toFixed(1) + 'x';
+  document.getElementById('m-fwhm').textContent = fwhm;
+  document.getElementById('m-bins').textContent = bins > 499 ? '500+' : bins;
+
+  drawGrid(cols, rows, tanA, sigma);
+
+  const N = 300, halfRange = 8;
+  const xs = [], esf = [], lsf = [];
+  for (let i = 0; i <= N; i++) {
+    const x = -halfRange + 2*halfRange*i/N;
+    xs.push(x);
+    esf.push(gaussianCDF(x, sigma));
+    lsf.push(gaussianPDF(x, sigma));
+  }
+  drawCurve('esfCanvas', xs, esf, blueStroke, 'distance (px)', true);
+  drawCurve('lsfCanvas', xs, lsf, amberStroke, 'distance (px)', false);
+}
+
+function drawGrid(cols, rows, tanA, sigma) {
+  const canvas = document.getElementById('gridCanvas');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const cw = W/cols, rh = H/rows;
+  ctx.clearRect(0,0,W,H);
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const cx = (c+0.5)*cw, cy = (r+0.5)*rh;
+      const edgeX = (rows/2 - r)*tanA*cw + W/2;
+      const dist = (cx - edgeX)/cw;
+      const val = gaussianCDF(dist, sigma);
+      const lum = isDark ? Math.round(val*170)+30 : Math.round(val*200)+20;
+      ctx.fillStyle = `rgb(${lum},${lum},${lum})`;
+      ctx.fillRect(c*cw, r*rh, cw, rh);
+    }
+  }
+
+  ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.18)';
+  ctx.lineWidth = 0.5;
+  for (let c = 0; c <= cols; c++) { ctx.beginPath(); ctx.moveTo(c*cw,0); ctx.lineTo(c*cw,H); ctx.stroke(); }
+  for (let r = 0; r <= rows; r++) { ctx.beginPath(); ctx.moveTo(0,r*rh); ctx.lineTo(W,r*rh); ctx.stroke(); }
+
+  ctx.strokeStyle = isDark ? 'rgba(239,159,39,0.95)' : '#ba7517';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let r = 0; r <= rows; r++) {
+    const ex = (rows/2 - r)*tanA*cw + W/2;
+    r === 0 ? ctx.moveTo(ex, 0) : ctx.lineTo(ex, r*rh);
+  }
+  ctx.stroke();
+
+  const midY = H/2;
+  const ex0 = (rows/2 - rows/2)*tanA*cw + W/2;
+  ctx.strokeStyle = '#E24B4A';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([3,2]);
+  ctx.beginPath(); ctx.moveTo(ex0, midY); ctx.lineTo(ex0+28, midY); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#E24B4A';
+  ctx.font = '9px sans-serif';
+  ctx.fillText('normal', ex0+30, midY+3);
+}
+
+function drawCurve(id, xs, ys, color, xLabel, isESF) {
+  const canvas = document.getElementById(id);
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const pad = {l:40, r:14, t:14, b:36};
+  const pw = W-pad.l-pad.r, ph = H-pad.t-pad.b;
+  ctx.clearRect(0,0,W,H);
+
+  const minX = xs[0], maxX = xs[xs.length-1];
+  const maxY = Math.max(...ys)*1.08;
+
+  function tx(x) { return pad.l + (x-minX)/(maxX-minX)*pw; }
+  function ty(y) { return pad.t + ph - y/maxY*ph; }
+
+  ctx.strokeStyle = axisColor; ctx.lineWidth = 0.5;
+  ctx.beginPath(); ctx.moveTo(pad.l,pad.t); ctx.lineTo(pad.l,pad.t+ph); ctx.lineTo(pad.l+pw,pad.t+ph); ctx.stroke();
+
+  ctx.fillStyle = textColor; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
+  [-6,-4,-2,0,2,4,6].forEach(v => {
+    const x = tx(v);
+    ctx.strokeStyle = axisColor; ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(x,pad.t+ph); ctx.lineTo(x,pad.t+ph+4); ctx.stroke();
+    ctx.fillStyle = textColor; ctx.fillText(v, x, pad.t+ph+15);
+  });
+
+  const yTicks = isESF ? [0,0.25,0.5,0.75,1.0] : [0,maxY*0.25,maxY*0.5,maxY*0.75,maxY];
+  ctx.textAlign = 'right';
+  yTicks.forEach(v => {
+    const y = ty(v);
+    ctx.strokeStyle = axisColor; ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(pad.l-4,y); ctx.stroke();
+    ctx.fillStyle = textColor; ctx.fillText(v.toFixed(2), pad.l-6, y+3);
+  });
+
+  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  xs.forEach((x,i) => { i===0 ? ctx.moveTo(tx(x),ty(ys[i])) : ctx.lineTo(tx(x),ty(ys[i])); });
+  ctx.stroke();
+
+  if (!isESF) {
+    const peak = Math.max(...ys), half = peak/2;
+    let x1 = xs[0], x2 = xs[xs.length-1];
+    for (let i = 0; i < ys.length-1; i++) {
+      if (ys[i] <= half && ys[i+1] > half) x1 = xs[i];
+      if (ys[i] >= half && ys[i+1] < half) x2 = xs[i+1];
+    }
+    ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.18)';
+    ctx.lineWidth = 1; ctx.setLineDash([4,3]);
+    ctx.beginPath(); ctx.moveTo(tx(x1),ty(half)); ctx.lineTo(tx(x2),ty(half)); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = textColor; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('FWHM', tx((x1+x2)/2), ty(half)-6);
+  }
+
+  ctx.fillStyle = isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.28)';
+  ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText(xLabel, pad.l+pw/2, H-5);
+}
+
+['angle','sigma','rows'].forEach(id => {
+  document.getElementById(id).addEventListener('input', compute);
+});
+compute();
+</script>
+</body>
+</html>
